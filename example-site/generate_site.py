@@ -65,6 +65,20 @@ NOTICES: list[tuple[str, str, str, str, str | None, str, str]] = [
      "本项目采用竞争性方式采购，具体投标安排详见后续通知。"),
 ]
 
+# 只在 sitemap 收录、目录分页不链接的公告（模拟仅 sitemap 入口可达的原文）
+SITEMAP_ONLY_NOTICES: list[tuple[str, str, str, str, str | None, str, str]] = [
+    ("CG-2026-007", "档案库房环境监测设备采购", "招标公告", "2026-10-18 09:15:00",
+     "2026-11-08 14:00:00", "档案库房环境监测设备采购招标公告",
+     "本公告仅通过 sitemap 暴露，未在分页目录中挂出链接。"),
+    ("CG-2026-008", "数字档案室软件升级服务采购", "更正公告", "2026-10-22 15:40:00",
+     "2026-11-12 10:30:00", "数字档案室软件升级服务采购更正公告",
+     "更正内容详见附件，本页未在目录中列出，仅 sitemap 可定位。"),
+]
+
+# 目录有但 sitemap 故意不收录的公告序号（notice_010、notice_011），模拟目录独有入口
+SITEMAP_EXCLUDED_INDEXES = {10, 11}
+
+
 FIELD_LABELS = [
     ("project_no", "项目编号"),
     ("notice_type", "公告类型"),
@@ -171,10 +185,36 @@ def build_index() -> str:
 <div class="wrap">
   <h1>示例采购信息平台</h1>
   <p><a href="list/page_1.html">进入招标采购公告列表</a></p>
+  <p>公告 sitemap 索引：<a href="sitemap.xml">sitemap.xml</a></p>
 </div>
 </body>
 </html>
 """
+
+
+def build_sitemap_urlset(locations: list[str]) -> str:
+    """生成单个 urlset 分片；locations 为站点根相对地址（含一个带片段的用例）。"""
+    urls = "\n".join(
+        f"  <url><loc>{html.escape(loc)}</loc></url>" for loc in locations
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{urls}\n"
+        "</urlset>\n"
+    )
+
+
+def build_sitemap_index(shards: list[str]) -> str:
+    maps = "\n".join(
+        f"  <sitemap><loc>{html.escape(loc)}</loc></sitemap>" for loc in shards
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{maps}\n"
+        "</sitemapindex>\n"
+    )
 
 
 CSS = """
@@ -221,9 +261,48 @@ def main() -> None:
             build_detail(notice, index), encoding="utf-8"
         )
 
+    # sitemap 独有公告：接在目录公告之后编号（notice_012、notice_013），只写详情页不进目录
+    extra_start = len(NOTICES) + 1
+    extra_indexed: list[tuple[int, tuple]] = []
+    for offset, notice in enumerate(SITEMAP_ONLY_NOTICES):
+        index = extra_start + offset
+        extra_indexed.append((index, notice))
+        (OUTPUT / "detail" / detail_filename(index)).write_text(
+            build_detail(notice, index), encoding="utf-8"
+        )
+
+    # 组装 sitemap 收录集合：目录公告（排除 SITEMAP_EXCLUDED_INDEXES）+ sitemap 独有公告
+    sitemap_entries: list[tuple[int, str]] = []
+    for index, _notice in indexed:
+        if index in SITEMAP_EXCLUDED_INDEXES:
+            continue
+        loc = f"/detail/{detail_filename(index)}"
+        # 用例：带片段的 loc 应在去重时被剥离片段
+        if index == 1:
+            loc += "#top"
+        sitemap_entries.append((index, loc))
+    for index, _notice in extra_indexed:
+        sitemap_entries.append((index, f"/detail/{detail_filename(index)}"))
+
+    # 一层索引分两片：奇数序号与偶数序号各一片，验证 sitemapindex 分片读取
+    shard_a = [loc for idx, loc in sitemap_entries if idx % 2 == 1]
+    shard_b = [loc for idx, loc in sitemap_entries if idx % 2 == 0]
+    (OUTPUT / "sitemap_1.xml").write_text(build_sitemap_urlset(shard_a), encoding="utf-8")
+    (OUTPUT / "sitemap_2.xml").write_text(build_sitemap_urlset(shard_b), encoding="utf-8")
+    (OUTPUT / "sitemap.xml").write_text(
+        build_sitemap_index(["/sitemap_1.xml", "/sitemap_2.xml"]), encoding="utf-8"
+    )
+    # 同时提供一个直接 urlset 的入口，便于验证非索引形态
+    (OUTPUT / "sitemap_all.xml").write_text(
+        build_sitemap_urlset([loc for _idx, loc in sitemap_entries]), encoding="utf-8"
+    )
+
     (OUTPUT / "index.html").write_text(build_index(), encoding="utf-8")
     (OUTPUT / "assets" / "style.css").write_text(CSS, encoding="utf-8")
-    print(f"示例站点已生成：{OUTPUT}（{len(NOTICES)} 条公告，{len(pages)} 个列表页）")
+    print(
+        f"示例站点已生成：{OUTPUT}（目录公告 {len(NOTICES)} 条、sitemap 独有 {len(extra_indexed)} 条，"
+        f"{len(pages)} 个列表页、sitemap 索引 1 个 + 分片 2 个）"
+    )
 
 
 if __name__ == "__main__":

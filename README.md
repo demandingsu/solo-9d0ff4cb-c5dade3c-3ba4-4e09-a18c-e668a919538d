@@ -4,6 +4,23 @@
 沿同站点“下一页”自动抓取详情页，按字段标签读取项目编号、公告类型、发布时间、投标截止时间，
 按**项目编号归并**、按**发布时间先后**处理，并在浏览器展示每个项目的当前结果与全部公告链接。
 
+此外提供**收录对账**（“收录对账”页签）：档案员核查公告站的分页目录与公告专用 sitemap
+是否收录同一批公告，找出只从一处入口能访问的原文。输入同站的**目录入口**与 **sitemap 地址**，
+工具从目录逐页提取详情链接，读取 sitemap 的 `urlset` 或**一层索引分片**，
+按**去掉片段（fragment）的完整 URL 去重、保留查询参数**，在浏览器列出仅在一侧出现的链接及其来源。
+
+## 收录对账的判定口径
+
+- 目录侧：沿同站“下一页”逐页抓取，提取每页的详情链接（复用延期核对的链接判定）。
+- sitemap 侧：根文件为 `sitemapindex` 时读取其分片（只下钻一层），为 `urlset` 时直接收录 `<loc>`。
+- 去重口径：相对地址转绝对地址后剥离 `#片段`，查询参数原样保留。
+- **复读校验**：采集结束后重新抓取所有已访问的目录页、重新读取所有 sitemap 文件并重抽链接，
+  与首访集合逐一比对。
+- 出现以下任一情况时，独有链接**仅作线索并标记“待核实”，不断言某侧漏登**：
+  抓取失败、解析失败（既非 urlset 也非 sitemapindex）、越站链接、触及采集上限、复读后集合变化。
+- 全程无异常时才给出“结论可信”，可据独有链接判断两侧收录差异。
+
+
 ## 处理规则
 
 | 情形 | 处理结果 |
@@ -24,8 +41,9 @@
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   └── app/
-│       ├── main.py             # 路由：录入、结果页、页面代理
+│       ├── main.py             # 路由：延期核对、收录对账、结果页、页面代理
 │       ├── crawler.py          # 列表页/下一页/详情页抓取（仅同站点）
+│       ├── reconcile.py        # 目录 vs sitemap 收录对账（含一层索引、复读校验）
 │       ├── parser.py           # 按字段标签解析详情（表格/dl/label/正文兜底）
 │       ├── merger.py           # 按项目编号归并、按发布时间处理截止时间
 │       ├── models.py
@@ -34,9 +52,11 @@
 ├── example-site/               # 同结构本地示例站点（静态 HTML + nginx）
 │   ├── Dockerfile              # 构建时运行 generate_site.py 生成页面
 │   ├── nginx.conf
-│   ├── generate_site.py        # 6 个项目、11 条公告、2 个列表页的场景数据
+│   ├── generate_site.py        # 场景数据、sitemap 索引与分片
 │   └── site/                   # 生成产物（可重新生成）
-└── tests/test_end_to_end.py    # 端到端测试（抓取 → 解析 → 归并 → 状态断言）
+└── tests/
+    ├── test_end_to_end.py      # 延期核对端到端测试（抓取 → 解析 → 归并 → 状态断言）
+    └── test_reconcile.py       # 收录对账端到端测试（对账、片段/查询参数、异常待核实、复读变化）
 ```
 
 ## 用 Docker Compose 启动
@@ -62,6 +82,27 @@ http://example-site/list/page_1.html
 
 > 公告链接默认指向容器内网地址（如 `http://example-site/...`），宿主机浏览器无法直接打开，
 > 因此页面链接统一经过网页后端的 `/view` 代理打开；示例站点本身也映射在 8080 端口可直接浏览。
+
+### 收录对账用法
+
+打开 <http://localhost:8000/reconcile>（或点页签“收录对账”），填入：
+
+```
+目录：  http://example-site/list/page_1.html
+sitemap：http://example-site/sitemap.xml
+```
+
+示例站点的收录差异：
+
+| 链接 | 目录 | sitemap | 说明 |
+| --- | --- | --- | --- |
+| `notice_001.html` ~ `notice_009.html` | 有 | 有 | 两侧共有（其中 001 的 sitemap loc 带 `#top`，验证片段剥离） |
+| `notice_010.html`、`notice_011.html` | 有 | 无 | **仅目录有**，疑似 sitemap 漏登线索 |
+| `notice_012.html`、`notice_013.html` | 无 | 有 | **仅 sitemap 有**，疑似目录漏挂链接 |
+
+`sitemap.xml` 是 `sitemapindex`，下分 `sitemap_1.xml`、`sitemap_2.xml` 两个 `urlset` 分片；
+另有 `sitemap_all.xml` 为直接 `urlset` 形态，可对照验证两种入口结果一致。
+
 
 ## 示例站点覆盖的场景
 
@@ -91,6 +132,7 @@ http://example-site/list/page_1.html
 - 仅跟随与入口**同站点**（协议+主机+端口一致）的“下一页”和详情链接，跨站链接跳过并记录；
 - 只允许 `http(s)`，拒绝 `file://` 等协议；
 - 上限：列表页 10 个、详情页 100 个、单请求超时 15 秒；
+- 对账额外上限：sitemap 文件 20 个、单个 sitemap 收录链接 1000 个；
 - `/view`、`/asset` 代理同样只转发 `http(s)` 目标。
 
 ## 本地测试（无需 Docker）
@@ -99,4 +141,5 @@ http://example-site/list/page_1.html
 pip install -r webapp/requirements.txt
 python example-site/generate_site.py
 python -I tests/test_end_to_end.py
+python -I tests/test_reconcile.py
 ```

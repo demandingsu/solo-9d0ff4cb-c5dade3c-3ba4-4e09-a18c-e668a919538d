@@ -12,6 +12,7 @@ from fastapi.templating import Jinja2Templates
 
 from .crawler import REQUEST_TIMEOUT, USER_AGENT, crawl
 from .merger import merge_announcements
+from .reconcile import reconcile
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -23,14 +24,36 @@ app = FastAPI(title="招标延期核对助手")
 def index(request: Request, url: str | None = None) -> HTMLResponse:
     context = {
         "request": request,
+        "mode": "check",
         "entry_url": url or "",
         "report": None,
         "results": None,
+        "catalog_url": "",
+        "sitemap_url": "",
+        "reconcile_report": None,
     }
     if url and url.strip():
         report = crawl(url.strip())
         context["report"] = report
         context["results"] = merge_announcements(report.announcements)
+    return templates.TemplateResponse("index.html", context)
+
+
+@app.get("/reconcile", response_class=HTMLResponse)
+def reconcile_view(request: Request, catalog: str | None = None, sitemap: str | None = None) -> HTMLResponse:
+    """收录对账：比对分页目录与公告 sitemap 的收录差异。"""
+    catalog = (catalog or "").strip()
+    sitemap = (sitemap or "").strip()
+    context = {
+        "request": request,
+        "mode": "reconcile",
+        "entry_url": "",
+        "report": None,
+        "results": None,
+        "catalog_url": catalog,
+        "sitemap_url": sitemap,
+        "reconcile_report": reconcile(catalog, sitemap) if catalog and sitemap else None,
+    }
     return templates.TemplateResponse("index.html", context)
 
 
